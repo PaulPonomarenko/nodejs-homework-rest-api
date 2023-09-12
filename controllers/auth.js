@@ -8,8 +8,10 @@ const gravatar = require("gravatar");
 const path = require("path");
 const fs = require("fs/promises");
 const Jimp = require("jimp");
+const sendEmail = require("../helpers/sendMail");
+const { nanoid } = require("nanoid");
 
-const { SECRET_KEY } = process.env;
+const { SECRET_KEY, BASE_URL } = process.env;
 
 const avatarsDir = path.join(__dirname, "../", "public", "avatars");
 
@@ -24,6 +26,7 @@ const register = async (req, res) => {
   if (user) {
     throw HttpError(409, "Email already in use");
   }
+  const verificationToken = nanoid();
 
   const hashPassword = await bcrypt.hash(password, 10);
 
@@ -33,6 +36,14 @@ const register = async (req, res) => {
     ...req.body,
     password: hashPassword,
     avatarURL,
+    verificationToken,
+  });
+  console.log(req.body);
+
+  await sendEmail({
+    to: newUser.email,
+    subject: "Verify email",
+    html: `<a target="_blank" href="${BASE_URL}/api/auth/verify/${verificationToken}">Verification email</a>`,
   });
 
   res.status(201).json({
@@ -52,7 +63,9 @@ const login = async (req, res) => {
   if (!user) {
     throw HttpError(401, "Email or password invalid");
   }
-
+  if (!user.verify) {
+    throw HttpError(401, "Email is not verified");
+  }
   const passwordCompare = await bcrypt.compare(password, user.password);
   if (!passwordCompare) {
     throw HttpError(401, "Email or password is wrong");
@@ -108,10 +121,49 @@ const updateAvatar = async (req, res) => {
   });
 };
 
+const verifyEmail = async (req, res) => {
+  const { verificationToken } = req.params;
+  const user = await User.findOne({ verificationToken });
+  if (!user) {
+    throw HttpError(404, "User not found");
+  }
+  await User.findByIdAndUpdate(user._id, {
+    verify: true,
+    verificationToken: null,
+  });
+
+  res.json({ message: "Verification successful" });
+};
+
+const resendVerifyEmail = async (req, res) => {
+  const { email } = req.body;
+  const user = await User.findOne({ email });
+  const { error } = schemas.emailRegisterSchema.validate(req.body);
+  if (error) {
+    throw HttpError(400, error.message);
+  }
+  if (!user) {
+    throw HttpError(401, "Email not found");
+  }
+  if (user.verify) {
+    throw HttpError(400, "Verification has already been passed");
+  }
+
+  await sendEmail({
+    to: newUser.email,
+    subject: "Verify email",
+    html: `<a target="_blank" href="${BASE_URL}/api/auth/verify/${user.verificationToken}">Verification email</a>`,
+  });
+
+  res.json({ message: "Verification email was sent" });
+};
+
 module.exports = {
   register: ctrlWrapper(register),
   login: ctrlWrapper(login),
   getCurrent: ctrlWrapper(getCurrent),
   logout: ctrlWrapper(logout),
   updateAvatar: ctrlWrapper(updateAvatar),
+  verifyEmail: ctrlWrapper(verifyEmail),
+  resendVerifyEmail: ctrlWrapper(resendVerifyEmail),
 };
